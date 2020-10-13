@@ -16,8 +16,6 @@ function App() {
   const [zksync, setZksync] = useState()
   const [magic, setMagic] = useState()
   const [tokens, setTokens] = useState()
-  const [depositAmount, setDepositAmount] = useState(0)
-  const [withdrawalAmount, setWithdrawalAmount] = useState(0)
   const [transferData, setTransferData] = useState({amount: 0, to: "0x"})
   const [selectedToken, setSelectedToken] = useState("ETH")
   const [balances, setBalances] = useState({eth: null, sync: null})
@@ -47,14 +45,6 @@ function App() {
 
   const onConnectionDataChange = event => {
     setConnection({...connection, data: event.target.value})
-  }
-
-  const onDepositAmountChange = event => {
-    setDepositAmount(event.target.value)
-  }
-
-  const onWithdrawalAmountChange = event => {
-    setWithdrawalAmount(event.target.value)
   }
 
   const onTransferAmountChange = event => {
@@ -100,7 +90,10 @@ function App() {
       syncProvider = await zksync.Provider.newHttpProvider("https://rinkeby-api.zksync.io/jsrpc")
     }
 
-    const syncWallet = await zksync.Wallet.fromEthSigner(ethWallet, syncProvider);
+    const syncWallet = await zksync.Wallet.fromEthSigner(ethWallet, syncProvider, null, null, "EIP1271Signature");
+    console.log(syncWallet)
+    const accountId = await syncWallet.getAccountId()
+    console.log("Account ID = " + accountId)
     const accountState = await syncWallet.getAccountState()
     console.log(accountState)
     const tokens = await syncProvider.getTokens()
@@ -110,7 +103,7 @@ function App() {
     await getBalances(syncWallet, tokens)
 
     // ATTEMPT TO CREATE THE SIGNING KEY
-    await createSigningKey(syncWallet, tokens)
+    await createSigningKey(syncWallet)
 
     // STATE
     setConnection({...connection, status: 'connected', syncWallet, syncProvider, address: syncWallet.address()})
@@ -119,12 +112,13 @@ function App() {
     setInterval(async () => await getBalances(syncWallet, tokens), 30000)
   }
 
-  const createSigningKey = async (syncWallet, tokens) => {
-    const balanceSync = await getBalance(syncWallet, "sync", tokens["ETH"])
-
-    if (balanceSync !== "0.0" && !await syncWallet.isSigningKeySet()) {
-      const changePubkey = await syncWallet.setSigningKey();
-      const receipt = await changePubkey.awaitReceipt();
+  const createSigningKey = async syncWallet => {
+    const accountState = await syncWallet.getAccountState()
+    
+    if (Object.keys(accountState.committed.balances).length !== 0 
+        && !await syncWallet.isSigningKeySet()) {
+      const txn = await syncWallet.setSigningKey();
+      const receipt = await txn.awaitReceipt();
       console.log(receipt)
     }  
   }
@@ -133,7 +127,13 @@ function App() {
     if (connection.type === CONNECTION_MAGIC) {
       await magic.user.logout()
     }
-    setConnection({status: 'disconnected'})
+    setConnection({
+      status: 'disconnected',
+      type: CONNECTION_METAMASK,
+      data: "",
+      address: null,
+      syncWallet: null
+    })
   }
 
   const getBalances = async (syncWallet, tokens) => {
@@ -166,40 +166,36 @@ function App() {
   }
 
   const deposit = async () => {
-    if(selectedToken.symbol !== "ETH") {
-      const approve = await connection.syncWallet.approveERC20TokenDeposits(selectedToken)
-      console.log(approve)
-    }
-
-    const deposit = await connection.syncWallet.depositToSyncFromEthereum({
-      depositTo: connection.address,
+    const txn = await connection.syncWallet.depositToSyncFromEthereum({
+      depositTo: transferData.to,
       token: selectedToken,
-      amount: ethers.utils.parseEther(depositAmount),
+      amount: ethers.utils.parseEther(transferData.amount),
+      approveDepositAmountForERC20: true
     });
-    console.log(deposit)
-    setDepositAmount(0)
+    console.log(txn)
+    setTransferData({amount: 0, to: "0x"})
 
-    const depositReceipt = await deposit.awaitReceipt();
-    console.log(depositReceipt)
+    const receipt = await txn.awaitReceipt();
+    console.log(receipt)
 
-    await createSigningKey(connection.syncWallet, tokens)
+    await createSigningKey(connection.syncWallet)
   }
 
   const withdraw = async () => { 
     const fee = await connection.syncProvider.getTransactionFee("Withdraw", connection.address, selectedToken)
   
-    const withdrawal = await connection.syncWallet.withdrawFromSyncToEthereum({
-        ethAddress: connection.address,
+    const txn = await connection.syncWallet.withdrawFromSyncToEthereum({
+        ethAddress: transferData.to,
         token: selectedToken,
-        amount: ethers.utils.parseEther(withdrawalAmount),
+        amount: ethers.utils.parseEther(transferData.amount),
         fee: fee.totalFee,
     });
-    console.log(withdrawal)
+    console.log(txn)
 
-    setWithdrawalAmount(0)
+    setTransferData({amount: 0, to: "0x"})
 
-    const withdrawalVerifyReceipt = await withdrawal.awaitVerifyReceipt();
-    console.log(withdrawalVerifyReceipt)
+    const verifyreceipt = await txn.awaitVerifyReceipt();
+    console.log(verifyreceipt)
   }
 
   const transfer = async () => {
@@ -208,18 +204,18 @@ function App() {
 
     const fee = await connection.syncProvider.getTransactionFee("Transfer", transferData.to, selectedToken)
 
-    const transfer = await connection.syncWallet.syncTransfer({
+    const txn = await connection.syncWallet.syncTransfer({
         to: transferData.to,
         token: selectedToken,
         amount,
         fee: fee.totalFee
     });
-    console.log(transfer)
+    console.log(txn)
 
     setTransferData({amount: 0, to: "0x"})
 
-    const transferReceipt = await transfer.awaitReceipt();
-    console.log(transferReceipt)
+    const receipt = await txn.awaitReceipt();
+    console.log(receipt)
   }
 
   return (
@@ -281,7 +277,8 @@ function App() {
 
           <hr></hr>
           <h3>Deposit</h3>
-          Amount: <input type="text" value={depositAmount} onChange={onDepositAmountChange} />&nbsp;
+          To: <input type="text" value={transferData.to} onChange={onTransferToChange} />&nbsp;
+          Amount: <input type="text" value={transferData.amount} onChange={onTransferAmountChange} /> &nbsp;
           <select value={selectedToken} onChange={onSelectedTokenChange}>
             {Object.keys(tokens).map((token, index) => {
               return <option value={token}>{token}</option> 
@@ -291,7 +288,8 @@ function App() {
 
           <hr></hr>
           <h3>Withdrawal</h3>
-          Amount: <input type="text" value={withdrawalAmount} onChange={onWithdrawalAmountChange} />&nbsp;
+          To: <input type="text" value={transferData.to} onChange={onTransferToChange} />&nbsp;
+          Amount: <input type="text" value={transferData.amount} onChange={onTransferAmountChange} /> &nbsp;
           <select value={selectedToken} onChange={onSelectedTokenChange}>
             {Object.keys(tokens).map((token, index) => {
               return <option value={token}>{token}</option> 
