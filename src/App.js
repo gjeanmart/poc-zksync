@@ -8,7 +8,7 @@ const MAGIC_API_KEY = "pk_test_0528D66ABD57E169"
 const CONNECTION_MNEMONIC = "mnemonic"
 const CONNECTION_METAMASK = "metamask"
 const CONNECTION_MAGIC = "magic.link"
-const NETWORK = 'rinkeby'
+const NETWORK = 'mainnet'
 const USE_WEBSOCKET = false;
 
 function App() {
@@ -18,7 +18,7 @@ function App() {
   const [tokens, setTokens] = useState()
   const [transferData, setTransferData] = useState({amount: 0, to: "0x"})
   const [selectedToken, setSelectedToken] = useState("ETH")
-  const [balances, setBalances] = useState({eth: null, sync: null})
+  const [balances, setBalances] = useState({eth: null, sync: null, fee: null})
   const [connection, setConnection] = useState({
     status: 'disconnected',
     type: CONNECTION_METAMASK,
@@ -85,9 +85,9 @@ function App() {
     // LOGIN ZKSYNC
     let syncProvider
     if(USE_WEBSOCKET) {
-      syncProvider = await zksync.getDefaultProvider("rinkeby")
+      syncProvider = await zksync.getDefaultProvider("mainnet")
     } else {
-      syncProvider = await zksync.Provider.newHttpProvider("https://rinkeby-api.zksync.io/jsrpc")
+      syncProvider = await zksync.Provider.newHttpProvider("https://api.zksync.io/jsrpc")
     }
 
     const syncWallet = await zksync.Wallet.fromEthSigner(ethWallet, syncProvider, null, null, "EIP1271Signature");
@@ -100,7 +100,7 @@ function App() {
     setTokens(tokens)
 
     // BALANCE
-    await getBalances(syncWallet, tokens)
+    await getBalances(syncWallet, syncProvider, tokens)
 
     // ATTEMPT TO CREATE THE SIGNING KEY
     await createSigningKey(syncWallet)
@@ -109,7 +109,7 @@ function App() {
     setConnection({...connection, status: 'connected', syncWallet, syncProvider, address: syncWallet.address()})
 
     // POST-LOGIN
-    setInterval(async () => await getBalances(syncWallet, tokens), 30000)
+    setInterval(async () => await getBalances(syncWallet, syncProvider, tokens), 30000)
   }
 
   const createSigningKey = async syncWallet => {
@@ -136,16 +136,24 @@ function App() {
     })
   }
 
-  const getBalances = async (syncWallet, tokens) => {
-    let balances = {eth: {}, sync: {}}
+  const getBalances = async (syncWallet, syncProvider, tokens) => {
+    let balances = {eth: {}, sync: {}, fee: {}}
     for(const token in tokens) {
       const balanceEth = await getBalance(syncWallet, "eth", tokens[token])
       balances["eth"][token] = balanceEth
       const balanceSync = await getBalance(syncWallet, "sync", tokens[token])
       balances["sync"][token] = balanceSync
+      const fee = await getFee(syncProvider, tokens[token])
+      balances["fee"][token] = fee
     }
     setBalances(balances)
   } 
+
+  const getFee = async (provider, token) => {
+    const fee = await provider.getTransactionFee({ ChangePubKey: { onchainPubkeyAuth: false} }, "0x4fb90cE4D11d42F9A7967Dd4D1D2d5F3908Cb6b9", token.symbol);
+    console.log("fee="+ethers.utils.formatUnits(fee.totalFee, token.decimals) + " " + token.symbol)
+    return ethers.utils.formatUnits(fee.totalFee, token.decimals)
+  }
 
   const getBalance = async (wallet, chain, token) => {
     if(chain === "eth") {
@@ -271,7 +279,7 @@ function App() {
           <div className={`split right`}>
             <h5>ZkSync</h5>
             {Object.keys(tokens).map((token, index) => {
-              return <div key={"sync"+token}>Balance: {balances.sync[token]} {token} <a onClick={() => refreshBalance(connection.syncWallet, "sync", tokens[token])}><span role="img">🔄</span></a></div>  
+              return <div key={"sync"+token}>Balance: {balances.sync[token]} {token} (fee: {balances.fee[token]} {token}) <a onClick={() => refreshBalance(connection.syncWallet, "sync", tokens[token])}><span role="img">🔄</span></a></div>  
             })}           
           </div>
 
